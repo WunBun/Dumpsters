@@ -6,6 +6,7 @@ import scipy
 
 import scipy.optimize
 import networkx as nx
+import osmnx as ox
 
 import random
 
@@ -75,6 +76,13 @@ class N_Graph():
             
         raise IndexError(f"No node with index {ind} in this graph")
     
+    def get_edge_by_name(self, name):
+        for edge in self.edges:
+            if edge.name == name:
+                return edge
+            
+        raise IndexError
+    
     def recalc_edges(self):
         self.edges = []
 
@@ -107,7 +115,7 @@ class N_Graph():
 
         self.reset_supply()
 
-        self.assignment = [round(prop * total_dumpsters) for prop in x]
+        self.assignment = [round(prop * total_dumpsters) for prop in x / sum(x)]
 
         if sum(self.assignment) != total_dumpsters:
             self.assignment[-1] += total_dumpsters - sum(self.assignment)
@@ -119,7 +127,7 @@ class N_Graph():
         for node_index, num_dumpsters in enumerate(self.assignment):
             if num_dumpsters: # if there's a dumpster there
                 remaining_supply = dumpster_volume * num_dumpsters
-                cur_node = self.get_by_ind(node_index)
+                cur_node = self.nodes[node_index]
 
                 cur_node.supply += min(remaining_supply, cur_node.demand)
                 remaining_supply -= min(remaining_supply, cur_node.demand)
@@ -188,7 +196,7 @@ class N_Graph():
         
         for i, node in enumerate(self.nodes):
             size = 50 + 200 * node.demand/self.max_demand()
-            color = node.supply/node.demand / 2 + node.extra_supply/node.demand / 2
+            color = sum(node.borrowed_supply.values())/node.demand + 0.5
             ax.scatter(node.x, node.y, s = size, color = cmap(color), edgecolor = "k", zorder = 1)
 
             if self.assignment[i]:
@@ -200,11 +208,12 @@ class Edge():
     # yes it's redundant
     # i'll take it out later if not necessary
 
-    def __init__(self, start, end):
+    def __init__(self, start, end, length = None, name = ""):
         self.start = start
         self.end = end
+        self.name = name
 
-        self.length = self.start.dist(self.end)
+        self.length = length if length is not None else self.start.dist(self.end)
 
     def __eq__(self, other):
         return (self.start == other.start and self.end == other.end) or (self.start == other.end and self.end == other.start)
@@ -243,8 +252,9 @@ class Node():
         return f"{self.index}"
 
     def __repr__(self):
-        return f"{self.index}"
+        # return f"{self.index}"
         # return f"{self.index}: ({self.x: 0.2f}, {self.y: 0.2f}) - d = {self.demand}, s = {self.supply}, ex = {self.extra_supply}, b = {self.borrowed_supply}"
+        return f"{self.index}: ({self.x: 0.2f}, {self.y: 0.2f}) - d = {self.demand - self.supply - self.extra_supply}, b = {self.borrowed_supply}"
 
 
 def grid(xnum, ynum, xspace, yspace, demand = lambda index: 0):
@@ -270,79 +280,116 @@ def grid(xnum, ynum, xspace, yspace, demand = lambda index: 0):
 
     return graph
 
+def NGraph_from_location(loc_str, dist):
+    G = ox.graph.graph_from_address(
+    loc_str,
+    dist,
+    network_type="drive",
+    simplify = True,
+    )
+    
+    fig, ax = ox.plot.plot_graph(G)
+
+    ngraph = N_Graph([])
+
+    nodes = [
+        Node(
+            ngraph,
+            (data["x"], data["y"]),
+            n_ind,
+            0,
+            None
+        )
+        for n_ind, data in G.nodes(data = True)
+    ]
+
+    ngraph.nodes = nodes
+
+    for indstart, indend, data in G.edges(data = True):
+        pstart = ngraph.get_by_ind(indstart)
+        pend = ngraph.get_by_ind(indend)
+
+        ngraph.edges.append(
+            Edge(
+                pstart,
+                pend,
+                data["length"],
+                data.get("name", "unnamed")
+            )
+        )
+
+        pstart.connected.add(pend)
+        pend.connected.add(pstart)
+
+    # print(nodes)
+    # print(ngraph.edges)
+
+    buildings = ox.features.features_from_place(loc_str, {"building": True})
+    
+    buildings_proj = ox.projection.project_gdf(buildings)
+
+    areas = buildings_proj.area
+
+    for index, row in buildings.iterrows():
+        volume = float(row["building:levels"]) * areas[index]
+
+        building_edge = ngraph.get_edge_by_name(row["addr:street"])
+
+        building_weight = round(volume/20) * 10
+
+        building_edge.start.demand += building_weight
+        building_edge.end.demand += building_weight
+
+    return ngraph
+
+g = NGraph_from_location("450 Memorial Drive, Cambridge, Massachusetts, USA", 500)
+
+
 # look at background of minimum flow!! Networkx documentation
 
-# explore more network shapes ex. from osmnx
-g = grid(3, 3, 10, 10, lambda i: 10 + 30 * (i % 3))
+# g = grid(4, 4, 10, 5, lambda i: 10 + 30 * (i % 3))
 
 total_demand = sum(n.demand for n in g.nodes)
+print(total_demand)
 
-# try using proportions rather than actual number of dumpsters
-total_dumpsters = 36
+total_dumpsters = total_demand / 10
 dumpster_volume = total_demand / total_dumpsters
 
-best_x = None
-best_cost = None
+bounds = scipy.optimize.Bounds(
+        [0] * len(g.nodes),
+        [1] * len(g.nodes),
+    )
 
-for _ in range(1000):
-    x = np.random.rand(len(g.nodes))
-    x = x / sum(x)
+cstr = scipy.optimize.LinearConstraint(
+    [1] * len(g.nodes),
+    1,
+    1,
+    keep_feasible = False,
+)
 
-    cost = g.try_x(x, total_dumpsters, dumpster_volume)
+# x0 = [1/len(g.nodes)] * len(g.nodes)
+x0 = [1] + [0] * (len(g.nodes) - 1)
 
-    if best_x is None or cost < best_cost:
-        best_x = x
-        best_cost = cost
+result = scipy.optimize.minimize(
+        g.try_x,
+        x0,
+        args = (total_dumpsters, dumpster_volume),
+        method = "SLSQP",
+        bounds = bounds,
+        constraints=cstr,
+        options = {
+                   'rhobeg': 1/total_dumpsters,
+                   'eps': 1/total_dumpsters,
+                   'maxiter': 1000,
+                   },
+    )
 
-print(f"Min Cost: {best_cost}")
+print(result)
 
-g.set_supply(best_x, total_dumpsters, dumpster_volume)
+g.set_supply(result.x, total_dumpsters, dumpster_volume)
 
 print(g.assignment)
+# print(g.nodes)
 
-nx.draw(g.G)
+# nx.draw(g.G)
 g.plot()
-
-# g.set_supply([total_demand/20] + [0] * (len(g.nodes) - 1))
-
-# bounds = scipy.optimize.Bounds(
-#         [0] * len(g.nodes),
-#         [10] * len(g.nodes)
-#     )
-
-# cstr = scipy.optimize.NonlinearConstraint(
-#     lambda x: sum(n.demand for n in g.nodes) - sum(x),
-#     0, 0
-# )
-
-# x0 = [total_demand/20] + [0] * (len(g.nodes) - 1)
-
-# result = scipy.optimize.minimize(
-#         g.try_x,
-#         x0,
-#         method = "SLSQP",
-#         bounds = bounds,
-#         constraints=cstr,
-#         options = {'rhobeg': 1, 'eps': 1}
-#     )
-
-# print(result)
-
-# best_res = None
-
-# for i in range(10):
-
-#     x0 = [10 * random.random() for node in g.nodes]
-
-#     result = scipy.optimize.minimize(
-#         g.try_x,
-#         x0,
-#         method = "SLSQP",
-#         bounds = bounds,
-#         options = {'rhobeg': 1, 'eps': 1}
-#     )
-
-#     if not best_res or result.fun <= best_res.fun:
-#         best_res = result
-
-# print(best_res)
