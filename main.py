@@ -96,11 +96,11 @@ class N_Graph():
         G = nx.DiGraph()
 
         for node in self.nodes:
-            G.add_node(node, demand = node.demand - node.supply - node.extra_supply)
+            G.add_node(node.index, demand = node.demand - node.supply - node.extra_supply)
 
         for edge in self.edges:
-            G.add_edge(edge.start, edge.end, weight = edge.length)
-            G.add_edge(edge.end, edge.start, weight = edge.length)
+            G.add_edge(edge.start.index, edge.end.index, weight = int(edge.length))
+            G.add_edge(edge.end.index, edge.start.index, weight = int(edge.length))
 
         return G
 
@@ -138,17 +138,22 @@ class N_Graph():
         
         self.flow = self.determine_supply_flow(self.G)
 
+        print(self.flow)
+
         for u in self.flow:
             for v in self.flow[u]:
                 f = self.flow[u][v]
 
-                u.extra_supply -= f
-                v.supply += f
+                u_ = self.get_by_ind(u)
+                v_ = self.get_by_ind(v)
 
-                if v.dist(u) in v.borrowed_supply:
-                    v.borrowed_supply[v.dist(u)] += f
+                u_.extra_supply -= f
+                v_.supply += f
+
+                if v_.dist(u_) in v_.borrowed_supply:
+                    v_.borrowed_supply[v_.dist(u_)] += f
                 else:
-                    v.borrowed_supply[v.dist(u)] = f
+                    v_.borrowed_supply[v_.dist(u_)] = f
 
     def reset_supply(self):
         self.assignment = np.array([0] * len(self.nodes))
@@ -174,6 +179,8 @@ class N_Graph():
             ### fix this
             ans += sum(k * v for k, v in node.borrowed_supply.items()) / node.demand
 
+            # factor for uniformity of distribution
+
         ans = float(ans)
 
         return ans
@@ -196,7 +203,7 @@ class N_Graph():
         
         for i, node in enumerate(self.nodes):
             size = 50 + 200 * node.demand/self.max_demand()
-            color = sum(node.borrowed_supply.values())/node.demand + 0.5
+            color = sum(node.borrowed_supply.values())/(node.demand + 0.1) + 0.5
             ax.scatter(node.x, node.y, s = size, color = cmap(color), edgecolor = "k", zorder = 1)
 
             if self.assignment[i]:
@@ -303,6 +310,12 @@ def NGraph_from_location(loc_str, dist):
         for n_ind, data in G.nodes(data = True)
     ]
 
+    for a in G.nodes:
+        for b in G.nodes:
+            if a != b:
+                route = ox.routing.shortest_path(G, a, b, weight="length")
+                # print(f"{route=}")
+
     ngraph.nodes = nodes
 
     for indstart, indend, data in G.edges(data = True):
@@ -314,15 +327,24 @@ def NGraph_from_location(loc_str, dist):
                 pstart,
                 pend,
                 data["length"],
-                data.get("name", "unnamed")
+                name = data.get("name", "unnamed")
+            )
+        )
+
+        ngraph.edges.append(
+            Edge(
+                pend,
+                pstart,
+                data["length"],
+                name = data.get("name", "unnamed")
             )
         )
 
         pstart.connected.add(pend)
         pend.connected.add(pstart)
 
-    # print(nodes)
-    # print(ngraph.edges)
+    for index, node in enumerate(ngraph.nodes):
+        node.index = index
 
     buildings = ox.features.features_from_place(loc_str, {"building": True})
     
@@ -335,7 +357,7 @@ def NGraph_from_location(loc_str, dist):
 
         building_edge = ngraph.get_edge_by_name(row["addr:street"])
 
-        building_weight = round(volume/20) * 10
+        building_weight = int(round(volume/20) * 10)
 
         building_edge.start.demand += building_weight
         building_edge.end.demand += building_weight
@@ -343,7 +365,6 @@ def NGraph_from_location(loc_str, dist):
     return ngraph
 
 g = NGraph_from_location("450 Memorial Drive, Cambridge, Massachusetts, USA", 500)
-
 
 # look at background of minimum flow!! Networkx documentation
 
@@ -355,41 +376,47 @@ print(total_demand)
 total_dumpsters = total_demand / 10
 dumpster_volume = total_demand / total_dumpsters
 
-bounds = scipy.optimize.Bounds(
-        [0] * len(g.nodes),
-        [1] * len(g.nodes),
-    )
 
-cstr = scipy.optimize.LinearConstraint(
-    [1] * len(g.nodes),
-    1,
-    1,
-    keep_feasible = False,
-)
+g.set_supply(np.array([1/len(g.nodes)] * (len(g.nodes))), total_dumpsters, dumpster_volume)
 
-# x0 = [1/len(g.nodes)] * len(g.nodes)
-x0 = [1] + [0] * (len(g.nodes) - 1)
-
-result = scipy.optimize.minimize(
-        g.try_x,
-        x0,
-        args = (total_dumpsters, dumpster_volume),
-        method = "SLSQP",
-        bounds = bounds,
-        constraints=cstr,
-        options = {
-                   'rhobeg': 1/total_dumpsters,
-                   'eps': 1/total_dumpsters,
-                   'maxiter': 1000,
-                   },
-    )
-
-print(result)
-
-g.set_supply(result.x, total_dumpsters, dumpster_volume)
-
-print(g.assignment)
-# print(g.nodes)
-
-# nx.draw(g.G)
 g.plot()
+
+
+# bounds = scipy.optimize.Bounds(
+#         [0] * len(g.nodes),
+#         [1] * len(g.nodes),
+#     )
+
+# cstr = scipy.optimize.LinearConstraint(
+#     [1] * len(g.nodes),
+#     1,
+#     1,
+#     keep_feasible = False,
+# )
+
+# # x0 = [1/len(g.nodes)] * len(g.nodes)
+# x0 = [1] + [0] * (len(g.nodes) - 1)
+
+# result = scipy.optimize.minimize(
+#         g.try_x,
+#         x0,
+#         args = (total_dumpsters, dumpster_volume),
+#         method = "SLSQP",
+#         bounds = bounds,
+#         constraints=cstr,
+#         options = {
+#                    'rhobeg': 1/total_dumpsters,
+#                    'eps': 1/total_dumpsters,
+#                    'maxiter': 1000,
+#                    },
+#     )
+
+# print(result)
+
+# g.set_supply(result.x, total_dumpsters, dumpster_volume)
+
+# print(g.assignment)
+# # print(g.nodes)
+
+# # nx.draw(g.G)
+# g.plot()
