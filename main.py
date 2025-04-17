@@ -13,11 +13,19 @@ import random
 EPSILON = 10e-2
 
 class N_Graph():
-    # Neighborhood graph
-    # Holds nodes and edges
+    """
+    Class representation of a neighborhood graph.
+    Contains nodes and edges. An assignment indicates how many dumpsters are placed at each node.
+    Calculates the cost of a particular assignment based on the cost of the
+    minimum flow satisfying all demands and the standard deviation of the assignment
+    (more uniform assignments are better).
+    """
 
     def __init__(self, nodes):
-        # takes as input an iterable of nodes
+        """
+        Takes as input a list of nodes, which have demands, locations, and connected nodes.
+        Creates edges based on the nodes.
+        """
 
         self._nodes = list(nodes)
         self.edges = []
@@ -81,7 +89,7 @@ class N_Graph():
             if edge.name == name:
                 return edge
             
-        raise IndexError
+        raise IndexError(f"No edge named {name} in this graph.")
     
     def recalc_edges(self):
         self.edges = []
@@ -93,23 +101,53 @@ class N_Graph():
                     self.edges.append(new_edge)
 
     def create_networkx_graph(self):
+        """
+        Creates a networkx graph representation of this object.
+        The demands of the nodes in the networkx graph are the unfulfilled
+        demand of the nodes in this object.
+
+        Currently, all edges are bidirectional.
+        """
+
         G = nx.DiGraph()
 
         for node in self.nodes:
             G.add_node(node.index, demand = node.demand - node.supply - node.extra_supply)
 
         for edge in self.edges:
-            G.add_edge(edge.start.index, edge.end.index, weight = int(edge.length))
-            G.add_edge(edge.end.index, edge.start.index, weight = int(edge.length))
+            G.add_edge(
+                edge.start.index, edge.end.index,
+                # capacity = int(edge.width * 20),
+                weight = int(edge.length),
+                )
+            G.add_edge(
+                edge.end.index, edge.start.index,
+                # capacity = int(edge.width * 20),
+                weight = int(edge.length),
+                )
 
         return G
 
     def determine_supply_flow(self, nx_graph):
-        ans = nx.min_cost_flow(nx_graph)
+        # ans = nx.min_cost_flow(nx_graph)
+
+        ans = nx.network_simplex(nx_graph)[1]
 
         return ans
 
     def set_supply(self, x, total_dumpsters, dumpster_volume):
+        """
+        Takes in an assignment as a distribution of dumpsters and the total amount of dumpsters.
+
+        Each node with dumpsters on it gets enough supply as the number of dumpsters there, or
+        as must as its demand, whichever is less.
+
+        We then create a networkx graph where each node's demand is the remaining unfulfilled demand.
+
+        We solve the minimum flow problem to determine how much supply is borrowed from other nodes.
+
+        These properties are assigned to the nodes.
+        """
         # each dumpster will give enough supply to the node it's on as that node's demand
         # if there is extra supply, it will be distributed among the nodes connected to that node
 
@@ -120,9 +158,8 @@ class N_Graph():
         if sum(self.assignment) != total_dumpsters:
             self.assignment[-1] += total_dumpsters - sum(self.assignment)
 
-        # print(self.assignment)
-        # print(sum(self.assignment))
-        # print(dumpster_volume)
+        print(f"Total supply: {dumpster_volume * sum(self.assignment)}")
+        print(f"Total demand: {sum(node.demand for node in self.nodes)}")
 
         for node_index, num_dumpsters in enumerate(self.assignment):
             if num_dumpsters: # if there's a dumpster there
@@ -137,8 +174,6 @@ class N_Graph():
         self.G = self.create_networkx_graph()
         
         self.flow = self.determine_supply_flow(self.G)
-
-        print(self.flow)
 
         for u in self.flow:
             for v in self.flow[u]:
@@ -164,28 +199,46 @@ class N_Graph():
             node.borrowed_supply = {}
 
     def cost(self):
+        """
+        The cost of the assignment is the sum of two components:
+
+        1. The sum of borrowed supply multiplied by the distance over which the supply was borrowed
+        2. The standard deviation of the assignment
+        3. A constant factor of 100 added for each dumpster that a node has over its max
+            dumpster capacity
+        """
+
         ans = 0
 
-        for node in self.nodes:
-            # proportion of demand that is not met
-            ans += (node.demand - node.supply) / node.demand
+        for i, node in enumerate(self.nodes):
+            # # proportion of demand that is not met
+            # ans += (node.demand - node.supply) / (node.demand if node.demand else 1)
 
-            # excess supply as a proportion of demand
-            ans += node.extra_supply / node.demand
+            # # excess supply as a proportion of demand
+            # ans += node.extra_supply / (node.demand if node.demand else 1)
 
             # people having to travel some distance to throw away their garbage
             # scaled by demand
 
-            ### fix this
-            ans += sum(k * v for k, v in node.borrowed_supply.items()) / node.demand
+            ans += sum(k * v for k, v in node.borrowed_supply.items()) / (node.demand if node.demand else 1)
 
-            # factor for uniformity of distribution
+            if self.assignment[i] > node.max_dumpsters:
+                ans += 100 * self.assignment[i] - node.max_dumpsters
+
+        # factor for uniformity of distribution
+
+        ans += np.std(self.assignment) / len(self.assignment)
 
         ans = float(ans)
 
         return ans
     
     def try_x(self, x, total_dumpsters, dumpster_volume):
+        """
+        Try an assignment, return the cost of this assignment, and then automatically
+        reset the N_Graph network.
+        """
+
         self.set_supply(x, total_dumpsters, dumpster_volume)
 
         ans = self.cost()
@@ -195,6 +248,17 @@ class N_Graph():
         return ans
 
     def plot(self):
+        """
+        Represent the current graph and assignment in a MatPlotLib chart.
+
+        Nodes are represented as circles; nodes with borrowed supply are red.
+
+        The size of the node represents its demand.
+
+        Red rectangles around nodes represent, by their size, the number of dumpsters placed at
+        that node.
+        """
+
         fig, ax = plt.subplots()
         cmap = mpl.colormaps["seismic"]
 
@@ -202,25 +266,28 @@ class N_Graph():
             ax.plot([edge.start.x, edge.end.x], [edge.start.y, edge.end.y], "tab:blue", zorder = -1)
         
         for i, node in enumerate(self.nodes):
-            size = 50 + 200 * node.demand/self.max_demand()
+            size = 25 + 100 * node.demand/self.max_demand()
             color = sum(node.borrowed_supply.values())/(node.demand + 0.1) + 0.5
             ax.scatter(node.x, node.y, s = size, color = cmap(color), edgecolor = "k", zorder = 1)
 
             if self.assignment[i]:
-                ax.scatter(node.x, node.y, s = 100 * self.assignment[i], marker = "s", edgecolor = "r", color = "none", alpha = 1, zorder = 2)
+                ax.scatter(node.x, node.y, s = 2 * self.assignment[i], marker = "s", edgecolor = "r", color = "none", alpha = 1, zorder = 2)
 
 
 class Edge():
-    # edge from node to node
-    # yes it's redundant
-    # i'll take it out later if not necessary
+    """
+    Represents a connection between nodes.
 
-    def __init__(self, start, end, length = None, name = ""):
+    Length can be assigned distinct from the Euclidean distance between the nodes.
+    """
+
+    def __init__(self, start, end, length = None, name = "", width = 10):
         self.start = start
         self.end = end
         self.name = name
 
         self.length = length if length is not None else self.start.dist(self.end)
+        self.width = width
 
     def __eq__(self, other):
         return (self.start == other.start and self.end == other.end) or (self.start == other.end and self.end == other.start)
@@ -228,13 +295,24 @@ class Edge():
     def __hash__(self): return super().__hash__()
 
     def __repr__(self):
-        return f"{self.start} --> {self.end}"
+        return f"{self.name}: {self.start} --> {self.end}, {self.length}"
 
 class Node():
-    # a node in the dumpster graph represents a crossroads?
-    # a location where a dumpster can be placed
+    """
+    Represents a location where dumpsters can be placed.
 
-    def __init__(self, parent, loc, index = None, demand = 0, connected = None):
+    Each node has:
+    
+    1. a demand representing the amount of waste projected to be produced at this location
+    2. a supply representing the amount of waste capacity currently provided to this location
+    3. borrowed_supply, a dictionary containing information about distances traveled to 
+        gain extra waste capacity to meet the demand. Keys are distances traveled and values
+        are the amount of supply borrowed from that distance.
+    4. a set of connected nodes
+    5. a maximum number of dumpsters that can be accomodated at that node
+    """
+
+    def __init__(self, parent, loc, index = None, demand = 0, connected = None, max_dumpsters = 10):
         self.parent = parent
         self.x = loc[0]
         self.y = loc[1]
@@ -246,6 +324,8 @@ class Node():
         self.supply = 0
         self.extra_supply = 0
         self.borrowed_supply = {}
+
+        self.max_dumpsters = max_dumpsters
 
     def dist(self, other):
         return math.sqrt((self.x - other.x) ** 2 + (self.y - other.y) ** 2)
@@ -265,6 +345,11 @@ class Node():
 
 
 def grid(xnum, ynum, xspace, yspace, demand = lambda index: 0):
+    """
+    Creates an N-Graph grid with a defined number of nodes and spacing in the
+    x and y directions. Assigns demand to the nodes as a function of node index.
+    """
+
     nodes = []
     graph = N_Graph([])
 
@@ -288,6 +373,15 @@ def grid(xnum, ynum, xspace, yspace, demand = lambda index: 0):
     return graph
 
 def NGraph_from_location(loc_str, dist):
+    """
+    Uses osmnx to create an N-Graph from a given address and a radius around the address.
+
+    Nodes represent road intersections.
+
+    Assigns demand to each node based on the number and size of buildings on the roads
+    connected to that node.
+    """
+
     G = ox.graph.graph_from_address(
     loc_str,
     dist,
@@ -322,23 +416,36 @@ def NGraph_from_location(loc_str, dist):
         pstart = ngraph.get_by_ind(indstart)
         pend = ngraph.get_by_ind(indend)
 
-        ngraph.edges.append(
-            Edge(
-                pstart,
-                pend,
-                data["length"],
-                name = data.get("name", "unnamed")
-            )
-        )
+        print(data)
+
+        road_width = data.get("width", 10)
+        if isinstance(road_width, list):
+            road_width = road_width[0]
+        
+        try:
+            road_width = float(road_width)
+        except:
+            road_width = 10
 
         ngraph.edges.append(
             Edge(
-                pend,
                 pstart,
+                pend,
                 data["length"],
-                name = data.get("name", "unnamed")
+                name = data.get("name", "unnamed"),
+                width = road_width
             )
         )
+
+        # ngraph.edges.append(
+        #     Edge(
+        #         pend,
+        #         pstart,
+        #         data["length"],
+        #         name = data.get("name", "unnamed"),
+        #         width = road_width
+        #     )
+        # )
 
         pstart.connected.add(pend)
         pend.connected.add(pstart)
@@ -346,7 +453,9 @@ def NGraph_from_location(loc_str, dist):
     for index, node in enumerate(ngraph.nodes):
         node.index = index
 
-    buildings = ox.features.features_from_place(loc_str, {"building": True})
+    buildings = ox.features.features_from_place("Cambridge, Massachusetts, USA", {"building": True})
+
+    print(buildings)
     
     buildings_proj = ox.projection.project_gdf(buildings)
 
@@ -355,68 +464,67 @@ def NGraph_from_location(loc_str, dist):
     for index, row in buildings.iterrows():
         volume = float(row["building:levels"]) * areas[index]
 
-        building_edge = ngraph.get_edge_by_name(row["addr:street"])
+        if not math.isnan(volume):
+            try:
+                building_edge = ngraph.get_edge_by_name(row["addr:street"])
 
-        building_weight = int(round(volume/20) * 10)
+                building_weight = int(round(volume/20) * 10)
 
-        building_edge.start.demand += building_weight
-        building_edge.end.demand += building_weight
+                building_edge.start.demand += building_weight
+                building_edge.end.demand += building_weight
+
+            except IndexError:
+                pass
 
     return ngraph
 
-g = NGraph_from_location("450 Memorial Drive, Cambridge, Massachusetts, USA", 500)
 
-# look at background of minimum flow!! Networkx documentation
+#### Finding the optimal dumpster assignment for a location in Cambridge
 
-# g = grid(4, 4, 10, 5, lambda i: 10 + 30 * (i % 3))
+g = NGraph_from_location("564 Massachusetts Ave, Cambridge, Massachusetts, USA", 500)
 
 total_demand = sum(n.demand for n in g.nodes)
-print(total_demand)
 
 total_dumpsters = total_demand / 10
 dumpster_volume = total_demand / total_dumpsters
 
+bounds = scipy.optimize.Bounds(
+        [0] * len(g.nodes),
+        [1] * len(g.nodes),
+    )
 
-g.set_supply(np.array([1/len(g.nodes)] * (len(g.nodes))), total_dumpsters, dumpster_volume)
+cstr = scipy.optimize.LinearConstraint(
+    [1] * len(g.nodes),
+    1,
+    1,
+    keep_feasible = False,
+)
 
-g.plot()
+# x0 = [1/len(g.nodes)] * len(g.nodes)
+x0 = [1] + [0] * (len(g.nodes) - 1)
 
+result = scipy.optimize.minimize(
+        g.try_x,
+        x0,
+        args = (total_dumpsters, dumpster_volume),
+        method = "SLSQP",
+        bounds = bounds,
+        # constraints=cstr,
+        options = {
+                   'rhobeg': 1/total_dumpsters,
+                   'eps': 1/total_dumpsters,
+                   'maxiter': 500,
+                   },
+    )
 
-# bounds = scipy.optimize.Bounds(
-#         [0] * len(g.nodes),
-#         [1] * len(g.nodes),
-#     )
+print(result)
 
-# cstr = scipy.optimize.LinearConstraint(
-#     [1] * len(g.nodes),
-#     1,
-#     1,
-#     keep_feasible = False,
-# )
+g.set_supply(result.x, total_dumpsters, dumpster_volume)
 
-# # x0 = [1/len(g.nodes)] * len(g.nodes)
-# x0 = [1] + [0] * (len(g.nodes) - 1)
+print(g.flow)
 
-# result = scipy.optimize.minimize(
-#         g.try_x,
-#         x0,
-#         args = (total_dumpsters, dumpster_volume),
-#         method = "SLSQP",
-#         bounds = bounds,
-#         constraints=cstr,
-#         options = {
-#                    'rhobeg': 1/total_dumpsters,
-#                    'eps': 1/total_dumpsters,
-#                    'maxiter': 1000,
-#                    },
-#     )
-
-# print(result)
-
-# g.set_supply(result.x, total_dumpsters, dumpster_volume)
-
-# print(g.assignment)
-# # print(g.nodes)
+print(g.assignment)
+# print(g.nodes)
 
 # # nx.draw(g.G)
-# g.plot()
+g.plot()
