@@ -8,7 +8,12 @@ import scipy.optimize
 import networkx as nx
 import osmnx as ox
 
-import random
+from functools import reduce
+
+def factors(n):
+    return reduce(
+        list.__add__,
+        ([i, n//i] for i in range(1, int(n**0.5) + 1) if not n % i))
 
 EPSILON = 10e-2
 
@@ -117,12 +122,12 @@ class N_Graph():
         for edge in self.edges:
             G.add_edge(
                 edge.start.index, edge.end.index,
-                # capacity = int(edge.width * 20),
+                capacity = int(1e12),
                 weight = int(edge.length),
                 )
             G.add_edge(
                 edge.end.index, edge.start.index,
-                # capacity = int(edge.width * 20),
+                capacity = int(1e12),
                 weight = int(edge.length),
                 )
 
@@ -158,8 +163,8 @@ class N_Graph():
         if sum(self.assignment) != total_dumpsters:
             self.assignment[-1] += total_dumpsters - sum(self.assignment)
 
-        print(f"Total supply: {dumpster_volume * sum(self.assignment)}")
-        print(f"Total demand: {sum(node.demand for node in self.nodes)}")
+        # print(f"Total supply: {dumpster_volume * sum(self.assignment)}")
+        # print(f"Total demand: {sum(node.demand for node in self.nodes)}")
 
         for node_index, num_dumpsters in enumerate(self.assignment):
             if num_dumpsters: # if there's a dumpster there
@@ -416,7 +421,7 @@ def NGraph_from_location(loc_str, dist):
         pstart = ngraph.get_by_ind(indstart)
         pend = ngraph.get_by_ind(indend)
 
-        print(data)
+        # print(data)
 
         road_width = data.get("width", 10)
         if isinstance(road_width, list):
@@ -455,7 +460,7 @@ def NGraph_from_location(loc_str, dist):
 
     buildings = ox.features.features_from_place("Cambridge, Massachusetts, USA", {"building": True})
 
-    print(buildings)
+    # print(buildings)
     
     buildings_proj = ox.projection.project_gdf(buildings)
 
@@ -485,8 +490,17 @@ g = NGraph_from_location("564 Massachusetts Ave, Cambridge, Massachusetts, USA",
 
 total_demand = sum(n.demand for n in g.nodes)
 
-total_dumpsters = total_demand / 10
-dumpster_volume = total_demand / total_dumpsters
+
+# decide on the total number of dumpsters
+# to satisfy minimum flow, it must be a factor of the total demand
+demand_divisors = sorted(factors(total_demand))
+print(demand_divisors)
+dumpster_size_ind = int(len(demand_divisors) / 2) - 1
+
+dumpster_volume = demand_divisors[dumpster_size_ind]
+total_dumpsters = total_demand / dumpster_volume
+
+print(f"{dumpster_volume =}, {total_dumpsters =}")
 
 bounds = scipy.optimize.Bounds(
         [0] * len(g.nodes),
@@ -495,13 +509,19 @@ bounds = scipy.optimize.Bounds(
 
 cstr = scipy.optimize.LinearConstraint(
     [1] * len(g.nodes),
-    1,
-    1,
+    0.9,
+    1.1,
     keep_feasible = False,
 )
 
-# x0 = [1/len(g.nodes)] * len(g.nodes)
-x0 = [1] + [0] * (len(g.nodes) - 1)
+# create a random iniitla value for the optimization
+
+start_offset = (np.random.rand(len(g.nodes)) - 0.5) * 0.25 * (1/len(g.nodes))
+
+x0 = np.ones(len(g.nodes)) / len(g.nodes) + start_offset
+x0 = x0 / sum(x0)
+
+# optimize using SLSQP
 
 result = scipy.optimize.minimize(
         g.try_x,
