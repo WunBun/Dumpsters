@@ -10,6 +10,8 @@ import osmnx as ox
 
 from functools import reduce
 
+import approxflow
+
 def factors(n):
     return reduce(
         list.__add__,
@@ -117,7 +119,7 @@ class N_Graph():
         G = nx.DiGraph()
 
         for node in self.nodes:
-            G.add_node(node.index, demand = node.demand - node.supply - node.extra_supply)
+            G.add_node(node.index, demand = node.demand - node.supply)
 
         for edge in self.edges:
             G.add_edge(
@@ -136,9 +138,19 @@ class N_Graph():
     def determine_supply_flow(self, nx_graph):
         # ans = nx.min_cost_flow(nx_graph)
 
-        ans = nx.network_simplex(nx_graph)[1]
+        # ans = nx.network_simplex(nx_graph)[1]
 
-        return ans
+        tol = 5
+
+        res, flow = approxflow.min_cost_flow(self, capacity_factor = 10, supply_tolerance = tol)
+
+        while not res.success:
+            tol += 10
+            res, flow = approxflow.min_cost_flow(self, capacity_factor = 10, supply_tolerance = tol)
+
+        print(res)
+
+        return flow
 
     def set_supply(self, x, total_dumpsters, dumpster_volume):
         """
@@ -167,14 +179,9 @@ class N_Graph():
         # print(f"Total demand: {sum(node.demand for node in self.nodes)}")
 
         for node_index, num_dumpsters in enumerate(self.assignment):
-            if num_dumpsters: # if there's a dumpster there
-                remaining_supply = dumpster_volume * num_dumpsters
+            if num_dumpsters: # if there's a dumpster there, set the node's supply
                 cur_node = self.nodes[node_index]
-
-                cur_node.supply += min(remaining_supply, cur_node.demand)
-                remaining_supply -= min(remaining_supply, cur_node.demand)
-
-                cur_node.extra_supply = remaining_supply
+                cur_node.supply = dumpster_volume * num_dumpsters
 
         self.G = self.create_networkx_graph()
         
@@ -187,7 +194,7 @@ class N_Graph():
                 u_ = self.get_by_ind(u)
                 v_ = self.get_by_ind(v)
 
-                u_.extra_supply -= f
+                u_.supply -= f
                 v_.supply += f
 
                 if v_.dist(u_) in v_.borrowed_supply:
@@ -200,7 +207,6 @@ class N_Graph():
 
         for node in self.nodes:
             node.supply = 0
-            node.extra_supply = 0
             node.borrowed_supply = {}
 
     def cost(self):
@@ -216,15 +222,11 @@ class N_Graph():
         ans = 0
 
         for i, node in enumerate(self.nodes):
-            # # proportion of demand that is not met
-            # ans += (node.demand - node.supply) / (node.demand if node.demand else 1)
-
-            # # excess supply as a proportion of demand
-            # ans += node.extra_supply / (node.demand if node.demand else 1)
+            # mismatches between supply and demand as a proportion of demand
+            ans += abs((node.supply - node.demand)) / (node.demand if node.demand else 1)
 
             # people having to travel some distance to throw away their garbage
             # scaled by demand
-
             ans += sum(k * v for k, v in node.borrowed_supply.items()) / (node.demand if node.demand else 1)
 
             if self.assignment[i] > node.max_dumpsters:
@@ -232,7 +234,7 @@ class N_Graph():
 
         # factor for uniformity of distribution
 
-        ans += np.std(self.assignment) / len(self.assignment)
+        # ans += np.std(self.assignment) / len(self.assignment)
 
         ans = float(ans)
 
@@ -295,7 +297,7 @@ class Edge():
         self.width = width
 
     def __eq__(self, other):
-        return (self.start == other.start and self.end == other.end) or (self.start == other.end and self.end == other.start)
+        return (self.start == other.start and self.end == other.end) # or (self.start == other.end and self.end == other.start)
     
     def __hash__(self): return super().__hash__()
 
@@ -327,7 +329,6 @@ class Node():
         self.index = index if index else self.parent.max_ind()
 
         self.supply = 0
-        self.extra_supply = 0
         self.borrowed_supply = {}
 
         self.max_dumpsters = max_dumpsters
@@ -344,9 +345,9 @@ class Node():
         return f"{self.index}"
 
     def __repr__(self):
-        # return f"{self.index}"
-        # return f"{self.index}: ({self.x: 0.2f}, {self.y: 0.2f}) - d = {self.demand}, s = {self.supply}, ex = {self.extra_supply}, b = {self.borrowed_supply}"
-        return f"{self.index}: ({self.x: 0.2f}, {self.y: 0.2f}) - d = {self.demand - self.supply - self.extra_supply}, b = {self.borrowed_supply}"
+        return f"{self.index}"
+        # return f"{self.index}: ({self.x: 0.2f}, {self.y: 0.2f}) - d = {self.demand}, s = {self.supply}, b = {self.borrowed_supply}"
+        # return f"{self.index}: ({self.x: 0.2f}, {self.y: 0.2f}) - d = {self.demand - self.supply}, b = {self.borrowed_supply}"
 
 
 def grid(xnum, ynum, xspace, yspace, demand = lambda index: 0):
@@ -483,68 +484,76 @@ def NGraph_from_location(loc_str, dist):
 
     return ngraph
 
+if __name__ == "__main__":
+    #### Finding the optimal dumpster assignment for a location in Cambridge
 
-#### Finding the optimal dumpster assignment for a location in Cambridge
+    g = NGraph_from_location("564 Massachusetts Ave, Cambridge, Massachusetts, USA", 500)
 
-g = NGraph_from_location("564 Massachusetts Ave, Cambridge, Massachusetts, USA", 500)
-
-total_demand = sum(n.demand for n in g.nodes)
+    total_demand = sum(n.demand for n in g.nodes)
 
 
-# decide on the total number of dumpsters
-# to satisfy minimum flow, it must be a factor of the total demand
-demand_divisors = sorted(factors(total_demand))
-print(demand_divisors)
-dumpster_size_ind = int(len(demand_divisors) / 2) - 1
+    # decide on the total number of dumpsters
+    # to satisfy minimum flow, it must be a factor of the total demand
+    demand_divisors = sorted(factors(total_demand))
+    print(demand_divisors)
+    dumpster_size_ind = int(len(demand_divisors) / 2) - 1
 
-dumpster_volume = demand_divisors[dumpster_size_ind]
-total_dumpsters = total_demand / dumpster_volume
+    dumpster_volume = demand_divisors[dumpster_size_ind]
+    total_dumpsters = total_demand / dumpster_volume
 
-print(f"{dumpster_volume =}, {total_dumpsters =}")
+    print(f"{dumpster_volume =}, {total_dumpsters =}")
 
-bounds = scipy.optimize.Bounds(
-        [0] * len(g.nodes),
+    bounds = scipy.optimize.Bounds(
+            [0] * len(g.nodes),
+            [1] * len(g.nodes),
+        )
+
+    cstr = scipy.optimize.LinearConstraint(
         [1] * len(g.nodes),
+        0.9,
+        1.1,
+        keep_feasible = False,
     )
 
-cstr = scipy.optimize.LinearConstraint(
-    [1] * len(g.nodes),
-    0.9,
-    1.1,
-    keep_feasible = False,
-)
+    # create a random initial value for the optimization
 
-# create a random iniitla value for the optimization
+    start_offset = (np.random.rand(len(g.nodes)) - 0.5) * 0.25 * (1/len(g.nodes))
 
-start_offset = (np.random.rand(len(g.nodes)) - 0.5) * 0.25 * (1/len(g.nodes))
+    x0 = np.ones(len(g.nodes)) / len(g.nodes) + start_offset
+    x0 = x0 / sum(x0)
 
-x0 = np.ones(len(g.nodes)) / len(g.nodes) + start_offset
-x0 = x0 / sum(x0)
-
-# optimize using SLSQP
-
-result = scipy.optimize.minimize(
-        g.try_x,
-        x0,
-        args = (total_dumpsters, dumpster_volume),
-        method = "SLSQP",
-        bounds = bounds,
-        # constraints=cstr,
-        options = {
-                   'rhobeg': 1/total_dumpsters,
-                   'eps': 1/total_dumpsters,
-                   'maxiter': 500,
-                   },
+    g.set_supply(
+        x = x0,
+        total_dumpsters = total_dumpsters,
+        dumpster_volume = dumpster_volume
     )
 
-print(result)
+    g.plot()
 
-g.set_supply(result.x, total_dumpsters, dumpster_volume)
+    # optimize using SLSQP
 
-print(g.flow)
+    # result = scipy.optimize.minimize(
+    #         g.try_x,
+    #         x0,
+    #         args = (total_dumpsters, dumpster_volume),
+    #         method = "SLSQP",
+    #         bounds = bounds,
+    #         # constraints=cstr,
+    #         options = {
+    #                 # 'rhobeg': 1/total_dumpsters,
+    #                 'eps': 0.5/total_dumpsters,
+    #                 'maxiter': 500,
+    #                 },
+    #     )
 
-print(g.assignment)
-# print(g.nodes)
+    print(result)
 
-# # nx.draw(g.G)
-g.plot()
+    g.set_supply(result.x, total_dumpsters, dumpster_volume)
+
+    print(g.flow)
+
+    print(g.assignment)
+    # print(g.nodes)
+
+    # # nx.draw(g.G)
+    g.plot()
