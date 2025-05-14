@@ -43,6 +43,12 @@ def min_cost_flow(NGraph, capacity_factor = 10, supply_tolerance = 2):
     some demand to within a set tolerance
     """
 
+    """
+    Can this be solved using least-squares to find an optimal, deterministic solution?
+
+    Or, take many randomized initial conditions, solve, and find the best one
+    """
+
     nodes = NGraph.nodes
     edges = NGraph.edges
 
@@ -86,7 +92,7 @@ def min_cost_flow(NGraph, capacity_factor = 10, supply_tolerance = 2):
     return result, flow
 
 if __name__ == "__main__":
-    from main import grid
+    from dumpsters import grid
 
     g = grid(
         3, 3, 30, 50, lambda i: 10 * np.sin(i)
