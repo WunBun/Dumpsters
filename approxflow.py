@@ -71,14 +71,24 @@ def min_cost_flow(NGraph, capacity_factor = 10, supply_tolerance = 2):
         ub = supplies + supply_tolerance
     )
 
-    result = scipy.optimize.minimize(
-        fun = flow_cost,
-        x0 = np.ones((len(edges))),
-        args = (c),
-        method = "SLSQP",
-        bounds = bounds,
-        constraints = constraints
-    )
+    best_res = None
+
+    for i in range(3):
+        x_0 = np.random.rand(len(edges)) * np.random.rand() * 100
+
+        result = scipy.optimize.minimize(
+            fun = flow_cost,
+            x0 = x_0,
+            args = (c),
+            method = "SLSQP",
+            bounds = bounds,
+            constraints = constraints
+        )
+
+        if not best_res or result.fun < best_res.fun:
+            best_res = result
+
+    result = best_res
 
     flow = {}
 

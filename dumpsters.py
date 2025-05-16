@@ -107,6 +107,12 @@ class N_Graph():
                 if new_edge not in self.edges:
                     self.edges.append(new_edge)
 
+    def total_demand(self):
+        return sum(n.demand for n in self.nodes)
+    
+    def total_assigned_supply(self):
+        return sum(n.supply for n in self.nodes)
+
     def create_networkx_graph(self):
         """
         Creates a networkx graph representation of this object.
@@ -140,17 +146,17 @@ class N_Graph():
 
         # ans = nx.network_simplex(nx_graph)[1]
 
-        tol = 5
+        tol = 1
 
         res, flow = approxflow.min_cost_flow(self, capacity_factor = 10, supply_tolerance = tol)
 
         while not res.success:
-            tol += 10
+            tol += 1
             res, flow = approxflow.min_cost_flow(self, capacity_factor = 10, supply_tolerance = tol)
 
-        print(res)
+        # print(res)
 
-        return flow
+        return flow, res
 
     def set_supply(self, x, total_dumpsters, dumpster_volume):
         """
@@ -172,8 +178,9 @@ class N_Graph():
 
         self.assignment = [round(prop * total_dumpsters) for prop in x / sum(x)]
 
-        if sum(self.assignment) != total_dumpsters:
-            self.assignment[-1] += total_dumpsters - sum(self.assignment)
+        while sum(self.assignment) != total_dumpsters:
+            rand_ind = np.random.randint(len(self.assignment))
+            self.assignment[rand_ind] += 1 if total_dumpsters > sum(self.assignment) else -1
 
         # print(f"Total supply: {dumpster_volume * sum(self.assignment)}")
         # print(f"Total demand: {sum(node.demand for node in self.nodes)}")
@@ -185,7 +192,7 @@ class N_Graph():
 
         self.G = self.create_networkx_graph()
         
-        self.flow = self.determine_supply_flow(self.G)
+        self.flow, self.flow_res = self.determine_supply_flow(self.G)
 
         for u in self.flow:
             for v in self.flow[u]:
@@ -269,20 +276,40 @@ class N_Graph():
         fig, ax = plt.subplots()
         cmap = mpl.colormaps["seismic"]
 
-        for edge in self.edges:
-            ax.plot([edge.start.x, edge.end.x], [edge.start.y, edge.end.y], "tab:blue", zorder = -1)
+        plt.axis('off')
+
+        for i, edge in enumerate(self.edges):
+            ax.plot([edge.start.x, edge.end.x], [edge.start.y, edge.end.y],
+                    "tab:blue",
+                    zorder = -1,
+                    )
+            
+            f = self.flow_res.x[i]
+            ax.plot([edge.start.x, edge.end.x], [edge.start.y, edge.end.y],
+                "tab:blue",
+                linewidth = 5 * abs(f)/max(abs(self.flow_res.x)),
+                zorder = -1,
+                )
+                
         
         for i, node in enumerate(self.nodes):
-            size = 25 + 100 * node.demand/self.max_demand()
+            size = 150 + 100 * node.demand/self.max_demand()
             color = sum(node.borrowed_supply.values())/(node.demand + 0.1) + 0.5
             ax.scatter(node.x, node.y, s = size, color = cmap(color), edgecolor = "k", zorder = 1)
 
             if self.assignment[i]:
-                ax.scatter(node.x, node.y, s = 2 * self.assignment[i], marker = "s", edgecolor = "r", color = "none", alpha = 1, zorder = 2)
                 ax.text(
                     node.x, node.y,
                     f"{self.assignment[i]}",
+                    ha = "center",
+                    va = "center",
                 )
+
+        plt.title(
+            f"Assignment Cost: {self.cost():.2f}"
+        )
+
+        return fig
 
 class Edge():
     """
@@ -486,3 +513,41 @@ def NGraph_from_location(loc_str, dist):
                 pass
 
     return ngraph
+
+def optimal_distribution(g, n_dumpsters, dumpster_capacity):
+    bounds = scipy.optimize.Bounds(
+        [0] * len(g.nodes),
+        [1] * len(g.nodes),
+    )
+
+    cstr = scipy.optimize.LinearConstraint(
+        [1] * len(g.nodes),
+        0.9,
+        1.1,
+        keep_feasible = False,
+    )
+
+    # create a random initial value for the optimization
+
+    start_offset = (np.random.rand(len(g.nodes)) - 0.5) * 0.25 * (1/len(g.nodes))
+
+    x0 = np.ones(len(g.nodes)) / len(g.nodes) + start_offset
+    x0 = x0 / sum(x0)
+
+    # optimize using SLSQP
+
+    result = scipy.optimize.minimize(
+        g.try_x,
+        x0,
+        args = (n_dumpsters, dumpster_capacity),
+        method = "SLSQP",
+        bounds = bounds,
+        # constraints=cstr,
+        options = {
+                # 'rhobeg': 1/total_dumpsters,
+                'eps': 0.5/n_dumpsters,
+                'maxiter': 500,
+                },
+    )
+
+    return result
