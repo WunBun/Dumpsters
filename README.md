@@ -60,6 +60,7 @@ Graphs can be visualized as follows:
   - The thickness of the edge represents the amount of space-borrowing that took place over this road.
 
 
-The following two images show a grid network before and after dumpster location optimization; initialy, all the dumpsters are placed on teh first row.
+The following two images show a grid network before and after dumpster location optimization; initialy, all the dumpsters are placed on the first row.
+
 ![1](/img/grid1.png)
 ![1opt](/img/grid1-opt.png)
